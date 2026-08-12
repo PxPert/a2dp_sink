@@ -1,0 +1,2 @@
+A2DP Pairing via Pin + callback
+Filters on MAC
