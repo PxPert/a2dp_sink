@@ -269,6 +269,7 @@ async def to_code(config):
     esp32.add_idf_component(
         name="ESP32-A2DP",
         repo="https://github.com/PxPert/ESP32-A2DP",
+        ref="esphome"
     )
 
     # Bluetooth settings
