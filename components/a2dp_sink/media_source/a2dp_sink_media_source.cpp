@@ -1,6 +1,6 @@
 #include "esphome/core/log.h"
 #include "a2dp_sink_media_source.h"
-#include "AudioTools.h"
+// #include "AudioTools.h"
 // #include "AudioTools/AudioCodecs/CodecSBC.h"
 // #include "AudioTools/AudioCodecs/CodecAACHelix.h"
 #include "BluetoothA2DPSink.h"
