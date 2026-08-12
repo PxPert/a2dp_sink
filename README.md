@@ -13,7 +13,7 @@ ESPHome custom component that turns an ESP32 into a Bluetooth A2DP audio sink. T
 
 - [Hub](#hub) — Central A2DP sink management
   - [Parameters](#hub-parameters)
-  - [Bluetooth Stack Options](#hub-bluetooth-stack-option)
+  - [Bluetooth Stack Options](#hub-bluetooth-stack-options)
   - [Automation Triggers](#hub-automation-triggers)
     - [`on_connection_state`](#on_connection_state)
     - [`on_playback_status`](#on_playback_status)
