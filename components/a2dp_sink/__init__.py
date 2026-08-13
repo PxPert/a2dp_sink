@@ -276,7 +276,6 @@ async def to_code(config):
     esp32.add_idf_sdkconfig_option("CONFIG_BT_ENABLED", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_CLASSIC_ENABLED", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_A2DP_ENABLE", True)
-    esp32.add_idf_sdkconfig_option("CONFIG_BT_SPP_ENABLED", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_BLUEDROID_ENABLED", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_AVRCP_CT_COVER_ART_ENABLED", False)
     esp32.add_idf_sdkconfig_option("CONFIG_BTDM_CTRL_MODEM_SLEEP", False)
@@ -287,7 +286,13 @@ async def to_code(config):
         esp32.add_idf_sdkconfig_option("CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY", True)
         esp32.add_idf_sdkconfig_option("CONFIG_BT_BLE_ENABLED", False)
         esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ENABLED", False)
+        esp32.add_idf_sdkconfig_option("CONFIG_BT_SPP_ENABLED", False)
         esp32.add_idf_sdkconfig_option("CONFIG_BT_GATTS_ENABLE", False)
+        esp32.add_idf_sdkconfig_option("CONFIG_BT_HFP_ENABLE", False)
+        esp32.add_idf_sdkconfig_option("CONFIG_BT_HID_ENABLED", False)
+        esp32.add_idf_sdkconfig_option("CONFIG_BT_STACK_NO_LOG", True)
+        
+
     else:
         esp32.add_idf_sdkconfig_option("CONFIG_BTDM_CTRL_MODE_BTDM", True)
 

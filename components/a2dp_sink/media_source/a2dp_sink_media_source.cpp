@@ -4,6 +4,7 @@
 // #include "AudioTools/AudioCodecs/CodecSBC.h"
 // #include "AudioTools/AudioCodecs/CodecAACHelix.h"
 #include "BluetoothA2DPSink.h"
+#include <cstdint>
 // #include "A2DPDecoderSBC.h"
 // #include "A2DPDecoderAAC.h"
 
@@ -88,6 +89,8 @@ namespace esphome::a2dp_sink {
                         break;
                     case ESP_AVRC_PLAYBACK_PAUSED:
                         this->set_state_(media_source::MediaSourceState::PAUSED);
+                        break;
+                    default:
                         break;
                 }
             });
@@ -209,7 +212,7 @@ namespace esphome::a2dp_sink {
                     this->parent_->prev_track();
                 break;
                 default:
-                    ESP_LOGW(TAG, "Unhandled media command: %d", command);
+                    ESP_LOGW(TAG, "Unhandled media command: %d", (uint8_t)command);
                 break;
             }
         }
