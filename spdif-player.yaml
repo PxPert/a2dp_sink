@@ -1,0 +1,509 @@
+substitutions:
+  friendly_name: Player HiFi
+  device_name: player-hifi
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+psram:
+  mode: quad
+  speed: 80MHZ
+  ignore_not_found: true
+  
+mdns:
+  disabled: true
+  
+esp32:
+  board: esp-wrover-kit
+  cpu_frequency: 240MHZ
+  flash_frequency: 80MHz
+  
+  framework:
+    type: esp-idf
+    advanced:
+      enable_ota_rollback: false
+      sram1_as_iram: true
+    sdkconfig_options: 
+      # Disabilita il protocollo SSL/TLS (mantiene solo le primitive crypto per WiFi)
+      CONFIG_MBEDTLS_CERTIFICATE_BUNDLE: n
+      CONFIG_MBEDTLS_SSL_ALPN: n
+      CONFIG_MBEDTLS_SSL_RENEGOTIATION: n
+      CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS: n
+      CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS: n
+      CONFIG_MBEDTLS_PEM_PARSE_C: n
+      CONFIG_MBEDTLS_PEM_WRITE_C: n
+      CONFIG_MBEDTLS_X509_CRL_PARSE_C: n
+      CONFIG_MBEDTLS_X509_CSR_PARSE_C: n
+      CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS: n
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: y
+      CONFIG_BTDM_CTRL_BR_EDR_MAX_ACL_CONN: "1"
+      CONFIG_BT_ACL_CONNECTIONS: "1"
+      CONFIG_FREERTOS_TIMER_QUEUE_LENGTH: "16"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "512"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: y
+      CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC: n
+  
+
+wifi:
+  power_save_mode: none
+  ssid: !secret wifi_dmz_ssid
+  password: !secret wifi_dmz_password
+  post_connect_roaming: false
+  use_address: 192.168.2.135
+  
+logger:
+  hardware_uart: UART0
+  level: WARN
+  baud_rate: 0
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_pwd_sec
+
+external_components:
+  - source: github://PxPert/a2dp_sink@master
+    components: [ a2dp_sink ]
+  - source: esphome-git/esphome/components
+    components: [ i2s_audio ]
+  - source: components
+    components: [ sendspin ]
+  
+globals:
+  - id: idle_start_time
+    type: time_t
+    initial_value: '-1.0'
+  - id: source_type
+    type: int8_t
+    initial_value: '0'
+
+sendspin:
+  task_stack_in_psram: false
+
+a2dp_sink:
+  name: HiFiPlayer
+  minimal_bluetooth: true
+  on_playback_position:
+    then:
+      - lambda: id(co_progress).publish_state(pos);
+  on_metadata:
+    then:
+      - logger.log:
+          format: "Metadata type %d: %s"
+          args: [type, text.c_str()]
+      - if:
+          condition:
+            lambda: return id(source_type) != 2;
+          then:
+            - lambda: |- 
+                switch (type) {
+                  case (int)a2dp_sink::A2DPSinkMetadataTypes::TITLE:
+                    id(co_title).publish_state(text);
+                    break;
+                  case (int)a2dp_sink::A2DPSinkMetadataTypes::ARTIST:
+                    id(co_artist).publish_state(text);
+                    break;
+                  case (int)a2dp_sink::A2DPSinkMetadataTypes::ALBUM:
+                    id(co_album).publish_state(text);
+                    break;
+                  case (int)a2dp_sink::A2DPSinkMetadataTypes::PLAYINGTIME:
+                    float value = 0.0f;
+                    if (sscanf(text.c_str(), "%f", &value) == 1) {
+                      id(co_duration).publish_state(value);
+                    }
+                    break;
+                }
+          
+i2s_audio:
+  - id: i2s_spdif
+    
+speaker:
+  - platform: i2s_audio
+    id: speaker_spdif
+    dac_type: external
+    channel: stereo
+    use_apll: true
+    sample_rate: 48000
+    i2s_dout_pin: GPIO32
+    spdif_mode: true
+    timeout: 1s
+    buffer_duration: 50ms
+    
+
+media_source:
+  - platform: sendspin
+    id: media_source_sendspin
+    static_delay_adjustable: true
+    buffer_size: 1000000
+  - platform: a2dp_sink
+    id: media_source_bluetooth
+    
+media_player:    
+  - platform: speaker_source
+    id: external_media_player
+    name: Media Player
+    media_pipeline:
+      format: WAV
+      num_channels: 2
+      sample_rate: 48000
+      speaker: speaker_spdif
+      sources:
+        - media_source_sendspin
+        - media_source_bluetooth
+    on_state:
+      - then: 
+        - logger.log:
+            format: "New mediaplayer state: %d"
+            args: [id(external_media_player).state]
+        - lambda: |-
+            if (
+              (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PLAYING)
+              ||
+              (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PAUSED)
+            ) {
+              if (id(media_source_bluetooth).get_state() == media_source::MediaSourceState::PLAYING) {
+                id(source_type) = 1;
+                id(co_source).publish_state("Bluetooth");                
+              } else if (id(media_source_sendspin).get_state() == media_source::MediaSourceState::PLAYING) {
+                id(source_type) = 2;
+                id(co_source).publish_state("Sendspin");
+              }
+            } else {
+              id(source_type) = 0;
+              id(co_source).publish_state("Stopped");
+            }
+          
+
+        
+number:
+  - platform: a2dp_sink
+    name: "Bluetooth Volume"
+
+    
+switch:
+  - platform: a2dp_sink
+    type: connection
+    name: "Bluetooth connection"
+    id: "btConnection"
+    restore_mode: ALWAYS_OFF
+
+  - platform: a2dp_sink
+    type: bluetooth
+    name: "Bluetooth state"
+    id: "btState"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+button:
+  - platform: template
+    name: next
+    on_press:
+      - then:
+          - media_player.next: external_media_player
+  - platform: template
+    name: previous
+    on_press:
+      - then:
+          - media_player.previous: external_media_player
+            
+  - platform: restart
+    name: "restart"
+    id: button_restart_1
+          
+sensor:
+  - platform: sendspin
+    id: sp_progress
+    internal: true
+    type: track_progress
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return id(source_type) != 1;
+            then:
+            - sensor.template.publish:
+                id: co_progress
+                state: !lambda 'return x;'
+          
+  - platform: sendspin
+    id: sp_duration
+    internal: true
+    type: track_duration
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return id(source_type) != 1;
+            then:
+            - sensor.template.publish:
+                id: co_duration
+                state: !lambda 'return x;'
+                
+  - platform: template
+    id: co_progress
+    name: "Song position"
+    update_interval: never 
+    internal: true
+  - platform: template
+    id: co_duration
+    name: "Song duration"
+
+text_sensor:
+  - platform: sendspin
+    type: artist
+    id: sp_artist
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return id(source_type) != 1;
+            then:
+            - text_sensor.template.publish:
+                id: co_artist
+                state: !lambda return x;          
+  - platform: sendspin
+    type: album
+    name: "Album"
+    id: sp_album
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return id(source_type) != 1;
+            then:
+            - text_sensor.template.publish:
+                id: co_album
+                state: !lambda 'return x;'
+  - platform: sendspin
+    type: title
+    name: "Title"
+    id: sp_title
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return id(source_type) != 1;
+            then:
+            - text_sensor.template.publish:
+                id: co_title
+                state: !lambda 'return x;'
+
+  - platform: template
+    name: "Artist"
+    update_interval: never
+    icon: "mdi:account"
+    id: co_artist
+  - platform: template
+    name: "Album"
+    update_interval: never
+    icon: "mdi:disc"
+    id: co_album
+  - platform: template
+    name: "Title"
+    update_interval: never
+    id: co_title
+    icon: "mdi:music-note"
+  - platform: template
+    name: "Source"
+    update_interval: never
+    id: co_source
+    icon: "mdi:source-fork"
+
+
+i2c:
+  sda: GPIO19
+  scl: GPIO18
+  frequency: 1MHz
+  scan: false
+
+font:
+  - file: "fonts/Roboto-Regular.ttf"
+    id: font_header
+    size: 14
+#    glyphs: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-,+/°:() "
+  - file: "fonts/Roboto-Light.ttf"
+    id: font_small
+    size: 13
+#    glyphs: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-,+/°:() "
+  - file: "fonts/Roboto-Light.ttf"
+    id: font_clock
+    size: 20
+    glyphs: "0123456789: "
+
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: md_state_icons
+    size: 40
+    glyphs:
+      - "\U000F040A" # play
+      - "\U000F03E4" # pause
+      - "\U000F04DB" # stop
+
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: md_state_icons_header
+    size: 14
+    glyphs:
+      - "\U000F04DB" # stop
+      - "\U000F00B0" # bluetooth
+      - "\U000F0469" # wireless
+
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: md_state_icons_small
+    size: 13
+    glyphs:
+      - "\U000F0025" # Album
+      - "\U000F0803" # Artist
+        
+# --- Display OLED SSD1306 ---
+display:
+  - platform: ssd1306_i2c
+    model: SSD1306_128X64
+    address: 0x3C
+    lambda: |-
+      // Controlla se il player è attivo (playing/paused)
+      bool is_active = (id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_PLAYING) ||
+                      (id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_PAUSED);
+
+      // Gestisci il timer idle
+      if (is_active) {
+        // Player attivo: resetta il timer idle
+        id(idle_start_time) = -1;
+      } else {
+        // Player inattivo: gestisci il timer
+        if (id(idle_start_time) < 0) {
+          // Prima volta che entriamo in idle: registra il timestamp
+          id(idle_start_time) = id(ha_time).now().timestamp;
+        }
+        // Calcola quanto tempo siamo in idle
+        time_t idle_seconds = id(ha_time).now().timestamp - id(idle_start_time);
+        
+        // Dopo 30 secondi di inattività, mostra ora e data
+        if (idle_seconds > 15) {
+          auto dt = id(ha_time).now();
+          
+          // Mostra l'ora in grande al centro
+          it.printf(64, 30, id(font_clock), TextAlign::CENTER, "%02d:%02d:%02d", dt.hour, dt.minute, dt.second);
+          
+          // Mostra la data sotto
+          it.printf(64, 50, id(font_small), TextAlign::CENTER, "%02d/%02d/%04d", dt.day_of_month, dt.month, dt.year);
+          
+          return; // Salta il resto del rendering
+        }
+      }
+      
+      // Icon
+      const char* status_icon = "\U000F04DB"; // Stop icon
+      if (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PLAYING) {
+        status_icon = "\U000F040A"; // Play icon
+      } else if (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PAUSED) {
+        status_icon = "\U000F03E4"; // Pause icon
+      }
+
+      const char* source_icon = "\U000F04DB"; // Stop icon
+      switch (id(source_type)) {
+        case 1:
+          source_icon = "\U000F00B0"; // Bluetooth icon
+          break;
+        case 2:
+          source_icon = "\U000F0469"; // Wireless icon
+          break;
+        default:
+          break;
+      }
+      
+      it.printf(20, 11, id(md_state_icons), TextAlign::TOP_CENTER,status_icon);
+      uint16_t position_secs = id(co_progress).state / 1000;
+      
+      it.print(13, 0, id(md_state_icons_header), source_icon);
+
+      it.print(40, 15, id(md_state_icons_small), "\U000F0803");
+
+      it.print(40, 30, id(md_state_icons_small), "\U000F0025");
+
+      // Barra di progresso con cursore
+      float duration = id(co_duration).state;
+      float progress = id(co_progress).state;
+      const int bar_start = 40;
+      const int bar_end = 124;
+      const int bar_y = 57;
+      const int bar_height = 2;
+      const int cursor_width = 3;
+      int cursor_x = bar_start;
+      
+      // Barra di base
+      it.filled_rectangle(bar_start, bar_y, bar_end - bar_start, bar_height);
+      
+      if (
+          (id(external_media_player).state == MEDIA_PLAYER_STATE_PLAYING) 
+          ||
+          (id(external_media_player).state == MEDIA_PLAYER_STATE_PAUSED) 
+          )
+        {
+          it.printf(20, 50, id(font_small), TextAlign::TOP_CENTER, "%02d:%02d", position_secs / 60, position_secs % 60 );
+          
+          it.print(40, 0, id(font_header), id(co_title).state.c_str());
+          it.print(55, 15, id(font_small), id(co_artist).state.c_str());
+          it.print(55, 30, id(font_small), id(co_album).state.c_str());
+          // Cursore
+          if (duration > 0) {
+            float ratio = fminf(fmaxf(progress / duration, 0.0f), 1.0f);
+            cursor_x = bar_start + (int)(ratio * (bar_end - bar_start));
+          }
+        }
+        it.filled_rectangle(cursor_x - (cursor_width / 2), bar_y - 3, cursor_width, bar_height + 6);
+        
+    flip_x: true
+    flip_y: true
+
+## --- Pulsanti GPIO ---
+binary_sensor:
+  - platform: gpio
+    internal: true
+    pin:
+      number: GPIO12
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Pulsante Avanti"
+    on_press:
+      then:
+        - media_player.next: external_media_player
+
+  - platform: gpio
+    internal: true
+    pin:
+      number: GPIO27
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Pulsante Indietro"
+    on_press:
+      then:
+        - media_player.previous: external_media_player
+
+  - platform: gpio
+    internal: true
+    pin:
+      number: GPIO14
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Pulsante Play-Stop"
+    on_multi_click:
+      - timing:
+          - ON for at most 2000ms
+        then:
+          - logger.log: "Normal click"
+          - media_player.toggle: external_media_player
+      - timing:
+          - ON for at least 2001ms
+        then:
+          - logger.log: Long click
+          - media_player.stop: external_media_player
+
+time:
+  platform: homeassistant
+  id: ha_time
+  timezone: Europe/Rome
