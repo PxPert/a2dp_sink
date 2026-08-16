@@ -558,95 +558,126 @@ State transitions are automatically synchronized with A2DP audio state and AVRC 
 ## Complete Example
 
 ```yaml
+substitutions:
+  friendly_name: Sample device
+  device_name: sample-device
+
 esphome:
-  name: a2dp-speaker
-  platform: ESP32
-  board: esp32dev
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+psram:
+  mode: quad
+  speed: 80MHZ
+  ignore_not_found: true
+  
+mdns:
+  disabled: true
+  
+esp32:
+  board: esp-wrover-kit
+  cpu_frequency: 240MHZ
+  flash_frequency: 80MHz
+  
+  framework:
+    type: esp-idf
+    advanced:
+      enable_ota_rollback: false
+      sram1_as_iram: true
+  
+
+wifi:
+  power_save_mode: none
+  ssid: !secret wifi_dmz_ssid
+  password: !secret wifi_dmz_password
+  post_connect_roaming: false
+  
+logger:
+  hardware_uart: UART0
+  level: WARN
+  baud_rate: 0
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_pwd_sec
 
 external_components:
   - source: github://PxPert/a2dp_sink@master
     components: [ a2dp_sink ]
-
+    
 a2dp_sink:
-  id: my_a2dp_hub
-  name: "LivingRoom"
-  auto_reconnect: true
-  on_connection_state:
-    then:
-      - if:
-          condition:
-            lambda: 'return state == ESP_A2D_CONNECTION_STATE_CONNECTED;'
-          then:
-            - logger.log: "Client connected!"
-  on_peer_name:
-    then:
-      - logger.log:
-          format: "Connected to %s"
-          args: [name.c_str()]
-  on_metadata:
-    then:
-      - logger.log:
-          format: "Now playing: %s"
-          args: [text.c_str()]
-
-switch:
-  - platform: a2dp_sink
-    type: bluetooth
-    a2dp_sink_id: my_a2dp_hub
-    name: "A2DP Bluetooth"
-    restore_mode: RESTORE_DEFAULT_OFF
-
-  - platform: a2dp_sink
-    type: connection
-    a2dp_sink_id: my_a2dp_hub
-    name: "A2DP Connection"
-
-sensor:
-  - platform: a2dp_sink
-    type: rssi
-    a2dp_sink_id: my_a2dp_hub
-    name: "A2DP RSSI"
-
-  - platform: a2dp_sink
-    type: trackposition
-    a2dp_sink_id: my_a2dp_hub
-    name: "Track Position"
-
-  - platform: a2dp_sink
-    type: samplereate
-    a2dp_sink_id: my_a2dp_hub
-    name: "Sample Rate"
-
-text_sensor:
-  - platform: a2dp_sink
-    type: title
-    a2dp_sink_id: my_a2dp_hub
-    name: "Track Title"
-
-  - platform: a2dp_sink
-    type: artist
-    a2dp_sink_id: my_a2dp_hub
-    name: "Artist"
-
-  - platform: a2dp_sink
-    type: peername
-    a2dp_sink_id: my_a2dp_hub
-    name: "Connected Device"
-
-  - platform: a2dp_sink
-    type: peeraddr
-    a2dp_sink_id: my_a2dp_hub
-    name: "Device Address"
-
-number:
-  - platform: a2dp_sink
-    a2dp_sink_id: my_a2dp_hub
-    name: "A2DP Volume"
+  name: SampleBTPlayer
+  minimal_bluetooth: true
+          
+i2s_audio:
+  - id: i2s_sample
+    
+speaker:
+  - platform: i2s_audio
+    id: speaker_sample
+    dac_type: external
+    channel: stereo
+    use_apll: true
+    sample_rate: 48000
+    i2s_dout_pin: GPIO32
+    timeout: 1s
+    buffer_duration: 50ms
+    
 
 media_source:
   - platform: a2dp_sink
-    a2dp_sink_id: my_a2dp_hub
-```
+    id: media_source_bluetooth
+    
+media_player:    
+  - platform: speaker_source
+    id: external_media_player
+    name: Media Player
+    media_pipeline:
+      format: WAV
+      num_channels: 2
+      sample_rate: 48000
+      speaker: speaker_sample
+      sources:
+        - media_source_bluetooth
+
+        
+number:
+  - platform: a2dp_sink
+    name: "Bluetooth Volume"
+
+    
+switch:
+  - platform: a2dp_sink
+    type: connection
+    name: "Bluetooth connection"
+    id: "btConnection"
+    restore_mode: ALWAYS_OFF
+
+  - platform: a2dp_sink
+    type: bluetooth
+    name: "Bluetooth state"
+    id: "btState"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+button:
+  - platform: template
+    name: next
+    on_press:
+      - then:
+          - media_player.next: external_media_player
+  - platform: template
+    name: previous
+    on_press:
+      - then:
+          - media_player.previous: external_media_player
+            
+  - platform: restart
+    name: "restart"
+    id: button_restart_1
 
 ---
 
