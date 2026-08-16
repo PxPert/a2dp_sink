@@ -563,9 +563,13 @@ esphome:
   platform: ESP32
   board: esp32dev
 
+external_components:
+  - source: github://PxPert/a2dp_sink@master
+    components: [ a2dp_sink ]
+
 a2dp_sink:
   id: my_a2dp_hub
-  name: "Living Room Speaker"
+  name: "LivingRoom"
   auto_reconnect: true
   on_connection_state:
     then:
