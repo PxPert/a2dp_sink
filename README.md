@@ -678,7 +678,7 @@ button:
   - platform: restart
     name: "restart"
     id: button_restart_1
-
+```
 ---
 
 ## Use Cases
