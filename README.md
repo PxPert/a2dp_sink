@@ -2,8 +2,11 @@
 
 ESPHome custom component that turns an ESP32 into a Bluetooth A2DP audio sink. The device receives audio streamed from a paired phone, tablet, or laptop and exposes connection state, playback metadata, volume, RSSI signal strength, and other telemetry as ESPHome entities and automation triggers.
 
-**Platform:** ESP32 only  
+**Platform:** ESP32 with Classic Bluetooth support.
+
 **Code owner:** @PxPert
+
+**Note**: Only the regular ESP32 microcontrollers are supported [Source](https://github.com/pschatzmann/ESP32-A2DP/wiki/Support-for-esp32-c3%3F)
 
 ---
 
