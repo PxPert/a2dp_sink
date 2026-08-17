@@ -283,15 +283,6 @@ button:
             - voice_assistant.stop
           else:
             - script.execute: start_assistant_script
-
-  - platform: template
-    name: Force play
-    id: force_sendspin
-    entity_category: config
-    on_press:
-      then:
-        - media_player.play: 
-            id: sendspin_media_player
         
 media_source:
   - platform: audio_http
