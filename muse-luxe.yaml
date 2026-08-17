@@ -1,0 +1,648 @@
+# ==========================================================
+# MuseLuxe - Portable Bluetooth Speaker & Voice Assistant
+# ==========================================================
+# This firmware is designed for the ESP32-based MuseLuxe device,
+# featuring an ESP32-WROVER-KIT, ES8388 DAC, and I2S audio components.
+#
+# KEY FEATURES:
+# - Dual Audio Source Support:
+#   1. A2DP Sink: Native Bluetooth A2DP audio streaming.
+#   2. Sendspin: Low-latency audio streaming over Wi-Fi (ESPHome integration).
+# - Voice Assistant Integration:
+#   On-device voice recognition and TTS via ESPHome Voice Assistant component.
+# - Smart LED Indicator (SK6812):
+#   Visual feedback for:
+#   - Playback status (Playing/Paused)
+#   - Voice Assistant states (Listening/Thinking/TTS/Error)
+#   - Low battery warnings
+#   - Wi-Fi/Connectivity issues
+#   - Wi-Fi Disabled State: Fast yellow flash indicates Wi-Fi is off.
+#     A device restart is required to return to the initial state.
+#
+# BUTTON MAPPING:
+# - Volume Up (+):
+#   - Short Press: Increase Media Player Volume
+#   - Long Press: Skip to Next Track
+# - Volume Down (-):
+#   - Short Press: Decrease Media Player Volume
+#   - Long Press: Skip to Previous Track / Start Playback if paused
+# - Action (Play/Pause):
+#   - Short Press: Toggle Play/Pause
+#   - Long Press: Trigger Voice Assistant
+#
+# POWER & CONNECTIVITY MANAGEMENT:
+# - "Dumb" Mode (Offline/Portable):
+#   If Wi-Fi fails to connect after 15 seconds, the Wi-Fi radio is 
+#   disabled to prevent interference with Bluetooth A2DP. Watchdog timers
+#   and API reconnection attempts are minimized to allow stable offline
+#   Bluetooth speaker operation.
+# - Wi-Fi Dependency:
+#   - Sendspin playback requires Wi-Fi.
+#   - Voice Assistant requires Wi-Fi.
+# - Bluetooth/Sendspin Conflict Resolution:
+#   When playing via Sendspin, Bluetooth A2DP is temporarily paused to 
+#   prevent audio source conflicts. Bluetooth is automatically resumed 
+#   when Sendspin playback stops (Pause/Stop).
+#
+# HARDWARE:
+# - MCU: ESP32-WROVER-KIT
+# - Audio Codec: ES8388 (I2S)
+# - Amplifier: GPIO21 (Enable)
+# - Battery: GPIO33 (ADC, 11dB attenuation)
+# - LED: GPIO22 (SK6812, GRB order)
+# - Buttons: GPIO19 (Vol+), GPIO32 (Vol-), GPIO12 (Play/VA)
+# ==========================================================
+
+
+substitutions:
+  friendly_name: Portable speaker
+  device_name: portable-speaker
+  
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    - priority: -100
+      then:
+        - script.execute: update_led
+        - script.execute: wait_wifi
+
+esp32:
+  board: esp-wrover-kit
+  flash_frequency: 80MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: "y"
+      
+#      CONFIG_ESP_WIFI_RX_IRAM_OPT: "y"
+#      CONFIG_ESP_WIFI_IRAM_OPT: "y"
+#      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "y"
+#      CONFIG_LWIP_IRAM_OPTIMIZATION: "y"
+
+      CONFIG_MBEDTLS_CERTIFICATE_BUNDLE: n
+      CONFIG_MBEDTLS_SSL_ALPN: n
+      CONFIG_MBEDTLS_SSL_RENEGOTIATION: n
+      CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS: n
+      CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS: n
+      CONFIG_MBEDTLS_PEM_PARSE_C: n
+      CONFIG_MBEDTLS_PEM_WRITE_C: n
+      CONFIG_MBEDTLS_X509_CRL_PARSE_C: n
+      CONFIG_MBEDTLS_X509_CSR_PARSE_C: n
+      CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS: n
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: y
+      CONFIG_BTDM_CTRL_BR_EDR_MAX_ACL_CONN: "1"
+      CONFIG_BT_ACL_CONNECTIONS: "1"
+      CONFIG_FREERTOS_TIMER_QUEUE_LENGTH: "16"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "512"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: y
+      CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC: n
+
+      
+    advanced:
+      sram1_as_iram: true
+      enable_ota_rollback: false
+      
+psram:
+  mode: quad
+  speed: 80MHZ
+  ignore_not_found: true
+  
+logger:
+  hardware_uart: UART0
+  baud_rate: 115200
+  level: WARN
+  
+api:
+  id: api_ha
+  encryption:
+    key: !secret api_key
+  on_client_connected:
+    then:
+      - script.execute: update_led
+  on_client_disconnected:
+    then:
+      - script.execute: update_led
+
+ota:
+  - platform: esphome
+    password: !secret ota_pwd_sec
+
+i2c:
+  - id: i2c_bus
+    sda: GPIO18
+    scl: GPIO23
+
+wifi:
+  id: wifi_conn
+  ssid: !secret wifi_dmz_ssid
+  password: !secret wifi_dmz_password
+#  password: !secret wifi_password
+  reboot_timeout: 0s
+  on_connect:
+    then:
+      - script.stop: wait_wifi
+  on_disconnect:
+    then:
+      - script.execute: wait_wifi
+        
+globals:
+  - id: source_type
+    type: int8_t
+    initial_value: '0'
+  - id: source_type_before_va
+    type: int8_t
+    initial_value: '0'
+  - id: va_state
+    type: uint8_t
+    initial_value: '0'
+    
+external_components:
+  - source: github://pr#3552  # DAC support https://github.com/esphome/esphome/pull/3552
+    components: [es8388]
+    refresh: 0s
+  - source: github://PxPert/a2dp_sink@master
+    components: [ a2dp_sink ]
+#  - source: components
+#    components: [ sendspin ]
+    
+interval:
+  - interval: 10s
+    then: 
+      - lambda: |-
+          size_t max_int = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+          size_t max_ext = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+          size_t free_int = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+          size_t free_ext = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+          ESP_LOGW("Test","Internal memory free: %d, Largest allocatable block: %d", free_int, max_int);
+          ESP_LOGW("Test","External memory free: %d, Largest allocatable block: %d", free_ext, max_ext);
+    
+es8388:
+
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin: GPIO25
+    i2s_bclk_pin: GPIO5
+
+speaker:
+  - platform: i2s_audio
+    id: luxe_speaker
+    i2s_audio_id: i2s_audio_bus
+    i2s_dout_pin: GPIO26
+    dac_type: external
+    channel: stereo
+    buffer_duration: 100ms
+
+microphone:
+  - platform: i2s_audio
+    id: luxe_microphone
+    i2s_audio_id: i2s_audio_bus
+    sample_rate: 16000
+    i2s_din_pin: GPIO35
+    bits_per_sample: 16bit
+    channel: stereo
+    adc_type: external  
+
+sendspin:
+  id: sendspin_hub
+  task_stack_in_psram: false
+
+a2dp_sink:
+  name: MuseLuxe
+  minimal_bluetooth: true
+  on_playback_status:
+    script.execute: update_led
+  on_audio_state:
+    script.execute: update_led
+  
+switch:
+  - platform: gpio
+    id: amplifier_enable
+    pin:
+      number: GPIO21
+#      inverted: true
+    restore_mode: ALWAYS_ON
+    internal: true
+
+  - platform: a2dp_sink
+    type: connection
+    name: "Bluetooth connection"
+    id: "btConnection"
+    restore_mode: ALWAYS_OFF
+
+  - platform: a2dp_sink
+    type: bluetooth
+    name: "Bluetooth state"
+    id: "btState"
+    restore_mode: ALWAYS_ON
+    
+light:
+  - platform: esp32_rmt_led_strip
+    name: None
+    id: top_led
+    pin: GPIO22
+    chipset: SK6812
+    num_leds: 1
+    rgb_order: grb
+    gamma_correct: 2.8
+    internal: true
+    effects:
+      - pulse:
+          name: slow_pulse
+          transition_length: 2s
+          update_interval: 2s
+          min_brightness: 0%
+          max_brightness: 100%
+      - pulse:
+          name: fast_pulse
+          transition_length: 0.5s
+          update_interval: 0.5s
+          min_brightness: 0%
+          max_brightness: 100%
+      - pulse:
+          name: flash
+          transition_length: 50ms
+          update_interval: 50ms
+          min_brightness: 0%
+          max_brightness: 100%
+
+button:
+  - platform: restart
+    name: "Restart"
+    id: button_restart
+  - platform: template
+    name: Start-Stop assistant
+    id: start_assistant
+    entity_category: config
+    on_press:
+      - if:
+          condition:
+            voice_assistant.is_running
+          then:
+            - voice_assistant.stop
+          else:
+            - script.execute: start_assistant_script
+
+  - platform: template
+    name: Force play
+    id: force_sendspin
+    entity_category: config
+    on_press:
+      then:
+        - media_player.play: 
+            id: sendspin_media_player
+        
+media_source:
+  - platform: audio_http
+    id: http_media_source
+  - platform: sendspin
+    id: media_source_sendspin
+    decode_memory: internal
+  - platform: a2dp_sink
+    id: media_source_bluetooth
+    
+media_player:
+  - platform: sendspin
+    id: sendspin_media_player
+  - platform: speaker_source
+    id: external_media_player
+    name: none
+    announcement_pipeline:
+      format: FLAC
+      num_channels: 2
+      sample_rate: 48000
+      speaker: luxe_speaker
+      sources:
+        - http_media_source
+        - media_source_sendspin
+        - media_source_bluetooth
+    volume_increment: 0.05
+    volume_initial: 100%
+    
+    volume_min: 0.4
+    volume_max: 0.9
+    on_state:
+      - then:
+          - logger.log:
+              format: 'New mediaplayer state: %d'
+              args:
+                - id(external_media_player).state
+          - if:
+              condition:
+                lambda: |
+                  return (              
+                    (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PLAYING)
+                    ||
+                    (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_ANNOUNCING)
+                    ||
+                    (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PAUSED)
+                  );
+              then:
+                - if:
+                    condition:
+                      lambda: return (id(media_source_bluetooth).get_state() == media_source::MediaSourceState::PLAYING);
+                    then:
+                      - lambda: id(source_type) = 1;
+                    else:
+                      - lambda: id(source_type) = 2;
+                      - script.execute:
+                          id: start_stop_bt
+                          s: !lambda |-
+                            return (! 
+                              ((id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PLAYING)
+                              ||
+                              (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_ANNOUNCING))
+                            );
+              else:
+                - lambda: id(source_type) = 0;
+                - script.execute:
+                    id: start_stop_bt
+                    s: 'true'
+          - script.execute: update_led
+      
+voice_assistant:
+  id: va
+  microphone:
+    - microphone: luxe_microphone
+  media_player: external_media_player
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_listening:
+    - lambda: id(va_state) = 1;
+    - script.execute:
+        id: update_led
+  on_stt_end:
+    - lambda: id(va_state) = 2;
+    - script.execute:
+        id: update_led
+  on_tts_start:
+    - lambda: id(va_state) = 3;
+    - script.execute:
+        id: update_led
+  on_error:
+    - lambda: id(va_state) = 4;
+    - script.execute:
+        id: update_led
+  on_idle:
+    - lambda: id(va_state) = 0;
+    - script.execute:
+        id: update_led
+  on_end:
+    - wait_until:
+        condition:
+          media_player.is_announcing:
+            id: external_media_player
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                media_player.is_announcing:
+                  id: external_media_player
+            - not:
+                speaker.is_playing:
+                  id: luxe_speaker
+    - lambda: id(va_state) = 0;
+    - if: 
+        condition:
+          lambda: "return id(source_type_before_va)==2;"
+        then:
+          - media_player.play: 
+              id: sendspin_media_player
+    - script.execute: update_led
+
+sensor:
+  - platform: adc
+    id: battery_sensor
+    pin: GPIO33
+    name: Battery
+    icon: "mdi:battery-outline"
+    device_class: voltage
+    state_class: measurement
+    entity_category: diagnostic
+    unit_of_measurement: V
+    update_interval: 15s
+    accuracy_decimals: 3
+    attenuation: 11db
+    raw: true
+    filters:
+      - multiply: 0.00173913  # 2300 -> 4, for attenuation 11db, based on Olivier's code
+      - exponential_moving_average:
+          alpha: 0.2
+          send_every: 2
+      - delta: 0.002
+
+binary_sensor:
+  - platform: gpio
+    internal: true
+    pin:
+      number: GPIO19
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    name: Volume Up
+    id: volume_up
+    on_multi_click:
+      - timing:
+          - ON FOR AT MOST 350ms
+          - OFF FOR AT LEAST 10ms
+        then:
+          - media_player.volume_up:
+              id: external_media_player
+      - timing:
+          - ON FOR AT LEAST 350ms
+        then:
+          - media_player.next:
+              id: external_media_player
+  - platform: gpio
+    internal: true
+    pin:
+      number: GPIO32
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    name: Volume Down
+    id: volume_down
+    on_multi_click:
+      - timing:
+          - ON FOR AT MOST 350ms
+          - OFF FOR AT LEAST 10ms
+        then:
+          - media_player.volume_down:
+              id: external_media_player
+      - timing:
+          - ON FOR AT LEAST 350ms
+        then:
+          - media_player.previous:
+              id: external_media_player
+  - platform: gpio
+    internal: true
+    pin:
+      number: GPIO12
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    name: Action
+    id: action_button
+    on_multi_click:
+      - timing:
+          - ON FOR AT MOST 350ms
+          - OFF FOR AT LEAST 10ms
+        then:
+          - media_player.toggle:
+              id: external_media_player
+      - timing:
+          - ON FOR AT LEAST 350ms
+        then:
+          - script.execute: start_assistant_script
+#      - timing:
+#          - ON FOR AT LEAST 350ms
+#          - OFF FOR AT LEAST 10ms
+#        then:
+#          - voice_assistant.stop:
+
+script:
+  - id: start_stop_bt
+    mode: restart
+    parameters:
+      s: bool
+    then:
+      - delay: 5s
+      - if: 
+          condition:
+            lambda: "return (id(btState).state != s);"
+          then:
+          - switch.control:
+              id: btState
+              state: !lambda "return s;"
+
+  - id: start_assistant_script
+    mode: single
+    then:
+      - if:
+          condition:
+            voice_assistant.connected:
+          then:
+          - lambda: "id(source_type_before_va)=0;"
+          - if:
+              condition:
+                - speaker.is_playing:
+                    id: luxe_speaker
+              then:
+                - if: 
+                    condition:
+                        lambda: "return (id(media_source_bluetooth).get_state() == media_source::MediaSourceState::PLAYING);"
+                    then:
+                      - media_player.stop: 
+                          id: external_media_player
+                    else:
+                      - lambda: "id(source_type_before_va)=2;"
+                      - media_player.pause: 
+                          id: external_media_player
+                - wait_until:
+                  - not:
+                    - speaker.is_playing:
+                        id: luxe_speaker
+          - voice_assistant.start:
+
+  - id: wait_wifi
+    then:
+      - delay: 15s
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - logger.log:
+                level: WARN
+                format: Wifi not connected. Disabling
+            - wifi.disable:
+            - delay: 1s
+            - script.execute: update_led
+
+                
+  - id: update_led
+    mode: restart
+    then:
+      - lambda: |
+          auto call = id(top_led).turn_on();
+          uint8_t va = id(va_state);
+          const char* effect = "none";
+          double color[3] = { 1.0,1.0,1.0 };
+
+          // Check if media player is in a playing/paused state
+          bool mp_playing = (
+              (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_PLAYING)
+              ||
+              (id(external_media_player).state  == media_player::MEDIA_PLAYER_STATE_ANNOUNCING)
+          );
+          bool mp_paused = (id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_PAUSED);
+          bool has_activity = mp_playing || mp_paused;
+
+          // Priority 1: Voice Assistant states
+          if (va > 0) {
+            switch (va) {
+            case 1: // Listening
+              color[0] = 0;
+              color[1] = 1.0;
+              color[2] = 0;
+              // effect = "slow_pulse";
+              break;
+            case 2: // Thinking
+              color[0] = 0;
+              color[1] = 1.0;
+              color[2] = 0;
+              effect = "fast_pulse";
+              break;
+            case 3: // Playing (TTS)
+              color[0] = 0;
+              color[1] = 1.0;
+              color[2] = 0;
+              call.set_rgb(0, 1, 0);
+              effect = "flash";
+              break;
+            case 4: // Error
+              color[0] = 1.0;
+              color[1] = 0;
+              color[2] = 0;
+              effect = "flash";
+              break;
+            }
+          } else if (id(battery_sensor).state < 3.0f) { 
+            // Priority 2: Low battery
+            color[0] = 1.0;
+            color[1] = 0;
+            color[2] = 0;
+            if (has_activity) {
+              effect = "slow_pulse";
+            }
+          } else if (has_activity) { // Priority 3: Audio source states
+            if (id(source_type) == 1) { // BT Source
+              color[0] = 0;
+              color[1] = 0;
+              color[2] = 1;
+            }
+            if (mp_playing && id(luxe_speaker).is_running()) {
+              effect = "slow_pulse";
+            }
+          } else { 
+            // Priority 4: API connectivity / Idle
+            if (! (id(api_ha).is_connected())) { 
+              color[0] = 1;
+              color[1] = 1;
+              color[2] = 0;
+            }
+            if (id(wifi_conn).is_disabled()) {
+              effect = "flash";
+            }
+          }
+
+          call.set_rgb(color[0], color[1], color[2]);
+          call.set_effect(effect);
+
+          call.perform();
+          return;
